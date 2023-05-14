@@ -1,52 +1,46 @@
 import numpy as np
-from pycuda import gpuarray
-from pycuda.compiler import SourceModule
+from numba import cuda
 
-N = 3
+size = 500
 
-# CUDA kernel
-kernel_code = """
-__global__ void matrix_add(const int *a, const int *b, int *c, int N) {
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y = blockIdx.y * blockDim.y + threadIdx.y;
-    int z = blockIdx.z * blockDim.z + threadIdx.z;
-    int index = x * N * N + y * N + z;
 
-    if (x < N && y < N && z < N) {
-        c[index] = a[index] + b[index];
-    }
-}
-"""
+@cuda.jit
+def matrix_add(a, b, c, size):
+    x, y, z = cuda.grid(3)
 
-# Compile the kernel
-mod = SourceModule(kernel_code)
+    if x < size and y < size and z < size:
+        index = x * size * size + y * size + z
+        c[index] = a[index] + b[index]
+
 
 # Host arrays
-a = np.random.randint(1, 11, (N, N, N)).astype(np.int32)
-b = np.random.randint(1, 11, (N, N, N)).astype(np.int32)
+a = np.random.randint(1, 11, (size, size, size)).astype(np.int32)
+b = np.random.randint(1, 11, (size, size, size)).astype(np.int32)
 c = np.empty_like(a)
 
 # Flatten the 3D arrays to 1D
 a_flat = a.flatten()
 b_flat = b.flatten()
+c_flat = np.empty_like(a_flat)
 
 # Device arrays
-a_gpu = gpuarray.to_gpu(a_flat)
-b_gpu = gpuarray.to_gpu(b_flat)
-c_gpu = gpuarray.empty_like(a_gpu)
+a_device = cuda.to_device(a_flat)
+b_device = cuda.to_device(b_flat)
+c_device = cuda.device_array_like(c_flat)
 
 # Call the kernel
-grid_dim = (1, 1, 1)
-block_dim = (N, N, N)
-matrix_add = mod.get_function("matrix_add")
-matrix_add(a_gpu, b_gpu, c_gpu, np.int32(N), grid=grid_dim, block=block_dim)
+threadsperblock = (8, 8, 8)
+blockspergrid_x = int(np.ceil(a.shape[0] / threadsperblock[0]))
+blockspergrid_y = int(np.ceil(a.shape[1] / threadsperblock[1]))
+blockspergrid_z = int(np.ceil(a.shape[2] / threadsperblock[2]))
+blockspergrid = (blockspergrid_x, blockspergrid_y, blockspergrid_z)
+
+matrix_add[blockspergrid, threadsperblock](a_device, b_device, c_device, np.int32(size))
 
 # Copy the result back to host
-c_flat = c_gpu.get()
-c_result = np.reshape(c_flat, (N, N, N))
+c_flat = c_device.copy_to_host()
+c_result = np.reshape(c_flat, (size, size, size))
 
-print("A:\n", a)
-print("------------------------------")
-print("B:\n", b)
-print("------------------------------")
-print("C:\n", c_result)
+# print("A:\n", a)
+# print("B:\n", b)
+# print("C:\n", c_result)
